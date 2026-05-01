@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: diabetic-retinopathy-detection
+  labels:
+    app: diabetic-retinopathy-detection
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: diabetic-retinopathy-detection
+  template:
+    metadata:
+      labels:
+        app: diabetic-retinopathy-detection
+    spec:
+      containers:
+        - name: diabetic-retinopathy-detection
+          image: xuanduck/diabetic-retinopathy-model-service:1.0.0 
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8001
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "1"
+              memory: "2Gi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: diabetic-retinopathy-detection
+spec:
+  selector:
+    app: diabetic-retinopathy-detection
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 8001
