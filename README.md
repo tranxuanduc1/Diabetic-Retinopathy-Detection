@@ -31,12 +31,12 @@ pip install -r requirements.txt
 
 ```bash
 cd project
-uvicorn main:app --host 0.0.0.0 --port 8000
+uvicorn main:app --host 0.0.0.0 --port 8001
 ```
 
-The API will be available at `http://localhost:8000`.
+The API will be available at `http://localhost:8001`.
 
-Interactive docs (Swagger UI): `http://localhost:8000/docs`
+Interactive docs (Swagger UI): `http://localhost:8001/docs`
 
 ---
 
@@ -116,10 +116,10 @@ Classify a retinal fundus image.
 
 ```bash
 # Health check
-curl http://localhost:8000/health
+curl http://localhost:8001/health
 
 # Predict from a file
-curl -X POST http://localhost:8000/predict \
+curl -X POST http://localhost:8001/predict \
   -F "file=@/path/to/retinal_image.jpg"
 ```
 
@@ -129,13 +129,13 @@ curl -X POST http://localhost:8000/predict \
 import requests
 
 # Health check
-resp = requests.get("http://localhost:8000/health")
+resp = requests.get("http://localhost:8001/health")
 print(resp.json())
 
 # Predict
 with open("retinal_image.jpg", "rb") as f:
     resp = requests.post(
-        "http://localhost:8000/predict",
+        "http://localhost:8001/predict",
         files={"file": ("retinal_image.jpg", f, "image/jpeg")},
     )
 
@@ -151,7 +151,7 @@ print(f"Raw outputs: {result['raw_outputs']}")
 const form = new FormData();
 form.append("file", fileInput.files[0]);
 
-const resp = await fetch("http://localhost:8000/predict", {
+const resp = await fetch("http://localhost:8001/predict", {
   method: "POST",
   body: form,
 });
