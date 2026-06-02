@@ -1,177 +1,170 @@
 # Diabetic Retinopathy Detection
 
-A FastAPI-based REST API that classifies diabetic retinopathy severity from retinal fundus images using a hierarchical ensemble of three EfficientNet-B3 models.
+## Dataset
 
-## Grading Scale
+- DDR Dataset: https://www.kaggle.com/datasets/mariaherrerot/ddrdataset
+- DDR Preprocess Augmented: https://www.kaggle.com/datasets/xuanductran/ddr-preprocess-augmented
 
-| Grade | Label              |
-|-------|--------------------|
-| 0     | No DR              |
-| 1     | Mild DR            |
-| 2     | Moderate DR        |
-| 3     | Severe DR          |
-| 4     | Proliferative DR   |
+## Model Structure
 
-## Setup
+This project uses the model structure from `structure_model_v5_for_ddr.ipynb`. The system is a hierarchical ensemble for diabetic retinopathy grading with five classes:
 
-### Requirements
+| Grade | Label |
+|---|---|
+| 0 | No DR |
+| 1 | Mild DR |
+| 2 | Moderate DR |
+| 3 | Severe DR |
+| 4 | Proliferative DR |
 
-- Python 3.11
-- Trained model files in `output_three_models/`
+## Input Data
 
-### Install dependencies
+The notebook expects preprocessed DDR images arranged by class folder:
 
-```bash
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+```text
+train_preprocess/
+  0/
+  1/
+  2/
+  3/
+  4/
+val_preprocess/
+  0/
+  1/
+  2/
+  3/
+  4/
+test_preprocess/
+  0/
+  1/
+  2/
+  3/
+  4/
 ```
 
-### Start the server
+Images are loaded as RGB, resized to `300 x 300`, batched with `BATCH_SIZE = 8` for training, and passed through TensorFlow EfficientNet `preprocess_input`.
 
-```bash
-cd project
-uvicorn main:app --host 0.0.0.0 --port 8001
+## Backbone And Head
+
+All three core models use the same base architecture:
+
+```text
+Input image: 300 x 300 x 3
+  -> EfficientNetB3 backbone, ImageNet weights, include_top=False
+  -> Simple Channel Attention block
+  -> GlobalAveragePooling2D
+  -> BatchNormalization
+  -> Dropout(0.4)
+  -> Dense(1024, relu)
+  -> BatchNormalization
+  -> Dropout(0.3)
+  -> Task-specific sigmoid output
 ```
 
-The API will be available at `http://localhost:8001`.
+The Simple Channel Attention block applies global average pooling, a `1 x 1` reduction convolution, a sigmoid gate convolution, and channel-wise multiplication with the backbone feature map.
 
-Interactive docs (Swagger UI): `http://localhost:8001/docs`
+## Three-Model Hierarchy
 
----
+### Model 1: Low vs High
 
-## API Endpoints
+`EffB3_M1_LowHigh` separates lower grades from higher grades.
 
-### GET `/health`
-
-Check that the server is running and all three models are loaded.
-
-**Response**
-
-```json
-{
-  "status": "ok",
-  "models_loaded": true
-}
+```text
+Classes: 0, 1, 2, 3, 4
+Target: 0 for grades {0, 1}; 1 for grades {2, 3, 4}
+Output: Dense(1, sigmoid)
+Saved prefix: effb3_low_high
 ```
 
----
+### Model 2: Grade 0 vs Grade 1
 
-### POST `/predict`
+`EffB3_M2_0vs1` is used for images routed to the low-severity branch.
 
-Classify a retinal fundus image.
-
-**Request**
-
-- Content-Type: `multipart/form-data`
-- Field: `file` — an image file (JPEG, PNG, etc.)
-
-**Response**
-
-```json
-{
-  "prediction": 2,
-  "label": "Moderate DR",
-  "route": "m1_high to m3",
-  "raw_outputs": {
-    "p_m1_high": 0.812,
-    "p_ge3": 0.341,
-    "p_ge4": 0.097
-  }
-}
+```text
+Classes: 0, 1
+Target: 0 or 1
+Output: Dense(1, sigmoid)
+Saved prefix: effb3_0_vs_1
 ```
 
-| Field           | Description                                                        |
-|-----------------|--------------------------------------------------------------------|
-| `prediction`    | Predicted DR grade (0–4)                                           |
-| `label`         | Human-readable label for the grade                                 |
-| `route`         | Which ensemble branch was taken (`m1_low to m2` or `m1_high to m3`) |
-| `raw_outputs`   | Raw model probabilities (fields vary by route, see below)          |
+### Model 3: Ordinal Grades 2, 3, 4
 
-**`raw_outputs` fields by route**
+`EffB3_M3_234Ordinal` is used for images routed to the high-severity branch.
 
-| Route          | Fields present                              |
-|----------------|---------------------------------------------|
-| `m1_low to m2` | `p_m1_high`, `p_m2_one`                     |
-| `m1_high to m3`| `p_m1_high`, `p_ge3`, `p_ge4`              |
-
-- `p_m1_high` — probability that severity is high (grade ≥ 2)
-- `p_m2_one`  — probability that grade is 1 (vs. 0), when low branch taken
-- `p_ge3`     — probability that grade ≥ 3, when high branch taken
-- `p_ge4`     — probability that grade = 4, when high branch taken
-
-**Error responses**
-
-| Status | Meaning                               |
-|--------|---------------------------------------|
-| 400    | File is not an image or is empty      |
-| 422    | Image could not be preprocessed       |
-| 500    | Model inference failed                |
-
----
-
-## Usage Examples
-
-### curl
-
-```bash
-# Health check
-curl http://localhost:8001/health
-
-# Predict from a file
-curl -X POST http://localhost:8001/predict \
-  -F "file=@/path/to/retinal_image.jpg"
+```text
+Classes: 2, 3, 4
+Ordinal target: [y >= 3, y >= 4]
+Grade 2 -> [0, 0]
+Grade 3 -> [1, 0]
+Grade 4 -> [1, 1]
+Output: Dense(2, sigmoid)
+Saved prefix: effb3_234_ordinal2bit
 ```
 
-### Python (requests)
+## Prediction Flow
 
-```python
-import requests
+The main inference flow is:
 
-# Health check
-resp = requests.get("http://localhost:8001/health")
-print(resp.json())
-
-# Predict
-with open("retinal_image.jpg", "rb") as f:
-    resp = requests.post(
-        "http://localhost:8001/predict",
-        files={"file": ("retinal_image.jpg", f, "image/jpeg")},
-    )
-
-result = resp.json()
-print(f"Grade: {result['prediction']} — {result['label']}")
-print(f"Route: {result['route']}")
-print(f"Raw outputs: {result['raw_outputs']}")
-```
-
-### JavaScript (fetch)
-
-```js
-const form = new FormData();
-form.append("file", fileInput.files[0]);
-
-const resp = await fetch("http://localhost:8001/predict", {
-  method: "POST",
-  body: form,
-});
-
-const result = await resp.json();
-console.log(result.prediction, result.label);
-```
-
----
-
-## Model Architecture
-
-The ensemble uses a three-stage hierarchical decision tree:
-
-```
+```text
 Input image
-    |
-    M1 (low_high)
-    |-- p < 0.5  --> M2 (zero_one)  --> Grade 0 or 1
-    |-- p >= 0.5 --> M3 (ordinal234) --> Grade 2, 3, or 4
+  -> Model 1: p_high
+      if p_high < 0.5:
+          -> Model 2 predicts grade 0 or 1
+      else:
+          -> Model 3 predicts grade 2, 3, or 4
 ```
 
-All three models are EfficientNet-B3 trained at 300×300 pixels with Ben Graham illumination preprocessing.
+For Model 3, the two ordinal sigmoid outputs are decoded as probabilities:
+
+```text
+p2 = 1 - p(y >= 3)
+p3 = p(y >= 3) - p(y >= 4)
+p4 = p(y >= 4)
+prediction = argmax([p2, p3, p4]) + 2
+```
+
+The notebook also contains experimental unified evaluation code that compares the three-model hierarchy with an additional ordinal model, but the core DDR structure is the three EfficientNetB3 models above.
+
+## Training Pipeline
+
+Each model is trained with the same staged fine-tuning pipeline:
+
+| Stage | Trainable Layers | Learning Rate |
+|---|---|---|
+| 1 | Classification head only, EfficientNetB3 frozen | `3e-4` |
+| 2 | EfficientNet blocks 6-7 | `1e-4` |
+| 3 | EfficientNet blocks 4-7 | `5e-5` |
+| 4 | EfficientNet blocks 1-7 | `3e-5` |
+
+Training settings:
+
+- `HEAD_EPOCHS = 10`
+- `FT_EPOCHS = 10` per fine-tuning stage
+- `WEIGHT_DECAY = 1e-4`
+- Binary cross-entropy for Model 1 and Model 2
+- Multi-label binary cross-entropy for Model 3
+- Metrics: binary accuracy and AUC for binary models, multi-label AUC for the ordinal model
+- Callbacks: early stopping, reduce learning rate on plateau, and best checkpoint saving
+
+## Output Models
+
+The trained checkpoints are saved in `output_three_models_ddr/`:
+
+```text
+effb3_low_high_stage1.keras
+effb3_low_high_stage2.keras
+effb3_low_high_stage3.keras
+effb3_low_high_stage4.keras
+
+effb3_0_vs_1_stage1.keras
+effb3_0_vs_1_stage2.keras
+effb3_0_vs_1_stage3.keras
+effb3_0_vs_1_stage4.keras
+
+effb3_234_ordinal2bit_stage1.keras
+effb3_234_ordinal2bit_stage2.keras
+effb3_234_ordinal2bit_stage3.keras
+effb3_234_ordinal2bit_stage4.keras
+```
+
+The stage 4 checkpoints are the final models used for evaluation and inference.
